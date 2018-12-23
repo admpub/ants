@@ -30,7 +30,7 @@ import (
 
 type sig struct{}
 
-type f func() error
+type f func()
 
 // Pool accept the tasks from client,it limits the total
 // of goroutines to a given number by recycling goroutines.
@@ -62,6 +62,8 @@ type Pool struct {
 // clear expired workers periodically.
 func (p *Pool) periodicallyPurge() {
 	heartbeat := time.NewTicker(p.expiryDuration)
+	defer heartbeat.Stop()
+
 	for range heartbeat.C {
 		currentTime := time.Now()
 		p.lock.Lock()
@@ -224,7 +226,7 @@ func (p *Pool) putWorker(worker *Worker) {
 	worker.recycleTime = time.Now()
 	p.lock.Lock()
 	p.workers = append(p.workers, worker)
-	//通知有一个空闲的worker
+	// Notify there is an available worker put back into queue.
 	p.cond.Signal()
 	p.lock.Unlock()
 }

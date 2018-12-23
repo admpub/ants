@@ -31,18 +31,17 @@ import (
 )
 
 const (
-	RunTimes      = 10000000
+	RunTimes      = 1000000
 	benchParam    = 10
-	benchAntsSize = 100000
+	benchAntsSize = 200000
 )
 
-func demoFunc() error {
+func demoFunc() {
 	n := 10
 	time.Sleep(time.Duration(n) * time.Millisecond)
-	return nil
 }
 
-func demoPoolFunc(args interface{}) error {
+func demoPoolFunc(args interface{}) {
 	//m := args.(int)
 	//var n int
 	//for i := 0; i < m; i++ {
@@ -51,7 +50,6 @@ func demoPoolFunc(args interface{}) error {
 	//return nil
 	n := args.(int)
 	time.Sleep(time.Duration(n) * time.Millisecond)
-	return nil
 }
 
 func BenchmarkGoroutineWithFunc(b *testing.B) {
@@ -88,10 +86,9 @@ func BenchmarkSemaphoreWithFunc(b *testing.B) {
 
 func BenchmarkAntsPoolWithFunc(b *testing.B) {
 	var wg sync.WaitGroup
-	p, _ := ants.NewPoolWithFunc(benchAntsSize, func(i interface{}) error {
+	p, _ := ants.NewPoolWithFunc(benchAntsSize, func(i interface{}) {
 		demoPoolFunc(i)
 		wg.Done()
-		return nil
 	})
 	defer p.Release()
 

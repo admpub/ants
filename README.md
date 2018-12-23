@@ -13,7 +13,7 @@
 
 [中文项目说明](README_ZH.md) | [Project Tutorial](http://blog.taohuawu.club/article/goroutine-pool)
 
-Package ants implements a fixed goroutine pool for managing and recycling a massive number of goroutines, allowing developers to limit the number of goroutines that created by your concurrent programs.
+Package `ants` implements a fixed goroutine pool for managing and recycling a massive number of goroutines, allowing developers to limit the number of goroutines that created in your concurrent programs.
 
 ## Features:
 
@@ -36,7 +36,7 @@ glide get github.com/panjf2000/ants
 ```
 
 ## How to use
-If your program will generate a massive number of goroutines and you don't want them to consume a vast amount of memory, with ants, all you need to do is to import ants package and submit all your tasks to the default limited pool created when ants was imported:
+If your program will generate a massive number of goroutines and you don't want them to consume a vast amount of memory, with `ants`, all you need to do is to import `ants` package and submit all your tasks to the default limited pool created when `ants` was imported:
 
 ``` go
 package main
@@ -52,17 +52,15 @@ import (
 
 var sum int32
 
-func myFunc(i interface{}) error {
+func myFunc(i interface{}) {
 	n := i.(int32)
 	atomic.AddInt32(&sum, n)
 	fmt.Printf("run with %d\n", n)
-	return nil
 }
 
-func demoFunc() error {
+func demoFunc() {
 	time.Sleep(10 * time.Millisecond)
 	fmt.Println("Hello World!")
-	return nil
 }
 
 func main() {
@@ -70,29 +68,27 @@ func main() {
 
 	runTimes := 1000
 
-	// use the common pool
+	// Use the common pool
 	var wg sync.WaitGroup
 	for i := 0; i < runTimes; i++ {
 		wg.Add(1)
-		ants.Submit(func() error {
+		ants.Submit(func() {
 			demoFunc()
 			wg.Done()
-			return nil
 		})
 	}
 	wg.Wait()
 	fmt.Printf("running goroutines: %d\n", ants.Running())
 	fmt.Printf("finish all tasks.\n")
 
-	// use the pool with a function
-	// set 10 the size of goroutine pool and 1 second for expired duration
-	p, _ := ants.NewPoolWithFunc(10, func(i interface{}) error {
+	// Use the pool with a function,
+	// set 10 to the size of goroutine pool and 1 second for expired duration
+	p, _ := ants.NewPoolWithFunc(10, func(i interface{}) {
 		myFunc(i)
 		wg.Done()
-		return nil
 	})
 	defer p.Release()
-	// submit tasks
+	// Submit tasks
 	for i := 0; i < runTimes; i++ {
 		wg.Add(1)
 		p.Serve(int32(i))
@@ -103,34 +99,89 @@ func main() {
 }
 ```
 
+## Integrate with http server
+```go
+package main
+
+import (
+	"io/ioutil"
+	"net/http"
+
+	"github.com/panjf2000/ants"
+)
+
+type Request struct {
+	Param  []byte
+	Result chan []byte
+}
+
+func main() {
+	pool, _ := ants.NewPoolWithFunc(100, func(payload interface{}) {
+		request, ok := payload.(*Request)
+		if !ok {
+			return
+		}
+		reverseParam := func(s []byte) []byte {
+			for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+				s[i], s[j] = s[j], s[i]
+			}
+			return s
+		}(request.Param)
+
+		request.Result <- reverseParam
+	})
+	defer pool.Release()
+
+	http.HandleFunc("/reverse", func(w http.ResponseWriter, r *http.Request) {
+		param, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "request error", http.StatusInternalServerError)
+		}
+		defer r.Body.Close()
+
+		request := &Request{Param: param, Result: make(chan []byte)}
+
+		// Throttle the requests traffic with ants pool. This process is asynchronous and
+		// you can receive a result from the channel defined outside.
+		if err := pool.Serve(request); err != nil {
+			http.Error(w, "throttle limit error", http.StatusInternalServerError)
+		}
+
+		w.Write(<-request.Result)
+	})
+
+	http.ListenAndServe(":8080", nil)
+}
+```
+
 ## Submit tasks
 Tasks can be submitted by calling `ants.Submit(func())`
 ```go
-ants.Submit(func() error {})
+ants.Submit(func(){})
 ```
 
-## Custom limited pool
-Ants also supports custom limited pool. You can use the `NewPool` method to create a pool with the given capacity, as following:
+## Customize limited pool
+`ants` also supports customizing limited pool. You can use the `NewPool` method to create a pool with the given capacity, as following:
 
 ``` go
-// set 10000 the size of goroutine pool
+// Set 10000 the size of goroutine pool
 p, _ := ants.NewPool(10000)
-// submit a task
-p.Submit(func() error {})
+// Submit a task
+p.Submit(func(){})
 ```
 
-## Readjusting pool capacity
-You can change ants pool capacity at any time with `ReSize(int)`:
+## Tune pool capacity
+You can change `ants` pool capacity at any time with `ReSize(int)`:
 
 ``` go
-pool.ReSize(1000) // Readjust its capacity to 1000
-pool.ReSize(100000) // Readjust its capacity to 100000
+pool.ReSize(1000) // Tune its capacity to 1000
+pool.ReSize(100000) // Tune its capacity to 100000
 ```
 
 Don't worry about the synchronous problems in this case, this method is thread-safe.
 
 ## About sequence
-All the tasks submitted to ants pool will not be guaranteed to be processed in order, because those tasks distribute among a series of concurrent workers, thus those tasks are processed concurrently.
+All the tasks submitted to `ants` pool will not be guaranteed to be processed in order, because those tasks distribute among a series of concurrent workers, thus those tasks are processed concurrently.
 
 ## Benchmarks
 
@@ -144,11 +195,11 @@ Go1.9
 
 <div align="center"><img src="ants_benchmarks.png"/></div>
 
- In that benchmark-picture, the first and second benchmarks performed test with 1M tasks and the rest of benchmarks performed test with 10M tasks, both unlimited goroutines and ants pool, and the capacity of this ants goroutine-pool was limited to 50K.
+ In that benchmark-picture, the first and second benchmarks performed test with 1M tasks and the rest of benchmarks performed test with 10M tasks, both unlimited goroutines and `ants` pool, and the capacity of this `ants` goroutine-pool was limited to 50K.
 
-- BenchmarkGoroutine-4 represent the benchmarks with unlimited goroutines in golang.
+- BenchmarkGoroutine-4 represents the benchmarks with unlimited goroutines in golang.
 
-- BenchmarkPoolGroutine-4 represent the benchmarks with a ants pool.
+- BenchmarkPoolGroutine-4 represents the benchmarks with a `ants` pool.
 
 The test data above is a basic benchmark and the more detailed benchmarks will be uploaded later.
 
@@ -156,7 +207,7 @@ The test data above is a basic benchmark and the more detailed benchmarks will 
 
 ![](benchmark_pool.png)
 
-In that benchmark-picture, the first and second benchmarks performed test with 1M tasks and the rest of benchmarks performed test with 10M tasks, both unlimited goroutines and ants pool, and the capacity of this ants goroutine-pool was limited to 50K.
+In that benchmark-picture, the first and second benchmarks performed test with 1M tasks and the rest of benchmarks performed test with 10M tasks, both unlimited goroutines and `ants` pool, and the capacity of this `ants` goroutine-pool was limited to 50K.
 
 **As you can see, `ants` can up to 2x faster than goroutines without pool (10M tasks) and it only consumes half memory comparing with goroutines without pool. (both 1M and 10M tasks)**
 
@@ -164,7 +215,7 @@ In that benchmark-picture, the first and second benchmarks performed test with 1
 
 ![](ants_bench_poolwithfunc.png)
 
-### Throughput ( situation for  only submitting tasks and  need not waiting  for all the tasks to be completed) 
+### Throughput (it is suitable for scenarios where asynchronous tasks are submitted without concern for results) 
 
 #### 100K tasks
 
@@ -180,7 +231,7 @@ In that benchmark-picture, the first and second benchmarks performed test with 1
 
 There was only the test of `ants` Pool because my computer was crash when it reached 10M goroutines without pool. 
 
-**As you can see, `ants` can up to 2x~6x faster than goroutines without pool and the memory consumption is reduced by 10 to 20 times.**
+**In conclusion, `ants` can up to 2x~6x faster than goroutines without pool and the memory consumption is reduced by 10 to 20 times.**
 
 [1]: https://travis-ci.com/panjf2000/ants.svg?branch=master
 [2]: https://travis-ci.com/panjf2000/ants

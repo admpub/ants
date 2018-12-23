@@ -54,10 +54,9 @@ var curMem uint64
 
 func TestAntsPoolWithFunc(t *testing.T) {
 	var wg sync.WaitGroup
-	p, _ := ants.NewPoolWithFunc(AntsSize, func(i interface{}) error {
+	p, _ := ants.NewPoolWithFunc(AntsSize, func(i interface{}) {
 		demoPoolFunc(i)
 		wg.Done()
-		return nil
 	})
 	defer p.Release()
 
@@ -72,6 +71,7 @@ func TestAntsPoolWithFunc(t *testing.T) {
 	curMem = mem.TotalAlloc/MiB - curMem
 	t.Logf("memory usage:%d MB", curMem)
 }
+
 func TestNoPool(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
@@ -94,10 +94,9 @@ func TestAntsPool(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
-		ants.Submit(func() error {
+		ants.Submit(func() {
 			demoFunc()
 			wg.Done()
-			return nil
 		})
 	}
 	wg.Wait()

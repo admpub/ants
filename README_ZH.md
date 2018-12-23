@@ -51,17 +51,15 @@ import (
 
 var sum int32
 
-func myFunc(i interface{}) error {
+func myFunc(i interface{}) {
 	n := i.(int32)
 	atomic.AddInt32(&sum, n)
 	fmt.Printf("run with %d\n", n)
-	return nil
 }
 
-func demoFunc() error {
+func demoFunc() {
 	time.Sleep(10 * time.Millisecond)
 	fmt.Println("Hello World!")
-	return nil
 }
 
 func main() {
@@ -69,29 +67,27 @@ func main() {
 
 	runTimes := 1000
 
-	// use the common pool
+	// Use the common pool
 	var wg sync.WaitGroup
 	for i := 0; i < runTimes; i++ {
 		wg.Add(1)
-		ants.Submit(func() error {
+		ants.Submit(func() {
 			demoFunc()
 			wg.Done()
-			return nil
 		})
 	}
 	wg.Wait()
 	fmt.Printf("running goroutines: %d\n", ants.Running())
 	fmt.Printf("finish all tasks.\n")
 
-	// use the pool with a function
-	// set 10 the size of goroutine pool and 1 second for expired duration
-	p, _ := ants.NewPoolWithFunc(10, func(i interface{}) error {
+	// Use the pool with a function,
+	// set 10 to the size of goroutine pool and 1 second for expired duration
+	p, _ := ants.NewPoolWithFunc(10, func(i interface{}) {
 		myFunc(i)
 		wg.Done()
-		return nil
 	})
 	defer p.Release()
-	// submit tasks
+	// Submit tasks
 	for i := 0; i < runTimes; i++ {
 		wg.Add(1)
 		p.Serve(int32(i))
@@ -102,28 +98,83 @@ func main() {
 }
 ```
 
+## 与http server集成
+```go
+package main
+
+import (
+	"io/ioutil"
+	"net/http"
+
+	"github.com/panjf2000/ants"
+)
+
+type Request struct {
+	Param  []byte
+	Result chan []byte
+}
+
+func main() {
+	pool, _ := ants.NewPoolWithFunc(100, func(payload interface{}) {
+		request, ok := payload.(*Request)
+		if !ok {
+			return
+		}
+		reverseParam := func(s []byte) []byte {
+			for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+				s[i], s[j] = s[j], s[i]
+			}
+			return s
+		}(request.Param)
+
+		request.Result <- reverseParam
+	})
+	defer pool.Release()
+
+	http.HandleFunc("/reverse", func(w http.ResponseWriter, r *http.Request) {
+		param, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "request error", http.StatusInternalServerError)
+		}
+		defer r.Body.Close()
+
+		request := &Request{Param: param, Result: make(chan []byte)}
+
+		// Throttle the requests traffic with ants pool. This process is asynchronous and
+		// you can receive a result from the channel defined outside.
+		if err := pool.Serve(request); err != nil {
+			http.Error(w, "throttle limit error", http.StatusInternalServerError)
+		}
+
+		w.Write(<-request.Result)
+	})
+
+	http.ListenAndServe(":8080", nil)
+}
+```
+
 ## 任务提交
 提交任务通过调用 `ants.Submit(func())`方法：
 ```go
-ants.Submit(func() error {})
+ants.Submit(func(){})
 ```
 
 ## 自定义池
 `ants`支持实例化使用者自己的一个 Pool ，指定具体的池容量；通过调用 `NewPool` 方法可以实例化一个新的带有指定容量的 Pool ，如下：
 
 ``` go
-// set 10000 the size of goroutine pool
+// Set 10000 the size of goroutine pool
 p, _ := ants.NewPool(10000)
-// submit a task
-p.Submit(func() error {})
+// Submit a task
+p.Submit(func(){})
 ```
 
 ## 动态调整协程池容量
 需要动态调整协程池容量可以通过调用`ReSize(int)`：
 
 ``` go
-pool.ReSize(1000) // Readjust its capacity to 1000
-pool.ReSize(100000) // Readjust its capacity to 100000
+pool.ReSize(1000) // Tune its capacity to 1000
+pool.ReSize(100000) // Tune its capacity to 100000
 ```
 
 该方法是线程安全的。
@@ -162,7 +213,7 @@ Go1.9
 
 **因为`PoolWithFunc`这个Pool只绑定一个任务函数，也即所有任务都是运行同一个函数，所以相较于`Pool`对原生goroutine在执行速度和内存消耗的优势更大，上面的结果可以看出，执行速度可以达到原生goroutine的300%，而内存消耗的优势已经达到了两位数的差距，原生goroutine的内存消耗达到了`ants`的35倍且原生goroutine的每次执行的内存分配次数也达到了`ants`45倍，1000w的任务量，`ants`的初始分配容量是5w，因此它完成了所有的任务依旧只使用了5w个goroutine！事实上，`ants`的Goroutine Pool的容量是可以自定义的，也就是说使用者可以根据不同场景对这个参数进行调优直至达到最高性能。**
 
-### 吞吐量测试（使用于那种只管提交异步任务而无须关心结果的场景）
+### 吞吐量测试（适用于那种只管提交异步任务而无须关心结果的场景）
 
 #### 10w 任务量
 
@@ -178,7 +229,7 @@ Go1.9
 
 1000w任务量的场景下，我的电脑已经无法支撑 golang 的原生 goroutine 并发，所以只测出了使用`ants`池的测试结果。
 
-**从该demo测试吞吐性能对比可以看出，使用ants的吞吐性能相较于原生goroutine可以保持在2-6倍的性能压制，而内存消耗则可以达到10-20倍的节省优势。** 
+**从该demo测试吞吐性能对比可以看出，使用`ants`的吞吐性能相较于原生goroutine可以保持在2-6倍的性能压制，而内存消耗则可以达到10-20倍的节省优势。** 
 
 [1]: https://travis-ci.com/panjf2000/ants.svg?branch=master
 [2]: https://travis-ci.com/panjf2000/ants
