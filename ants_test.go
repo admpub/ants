@@ -25,6 +25,7 @@ package ants_test
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,7 +53,29 @@ const (
 
 var curMem uint64
 
-func TestAntsPoolWithFunc(t *testing.T) {
+// TestAntsPoolWaitToGetWorker is used to test waiting to get worker.
+func TestAntsPoolWaitToGetWorker(t *testing.T) {
+	var wg sync.WaitGroup
+	p, _ := ants.NewPool(AntsSize)
+	defer p.Release()
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		p.Submit(func() {
+			demoPoolFunc(Param)
+			wg.Done()
+		})
+	}
+	wg.Wait()
+	t.Logf("pool, running workers number:%d", p.Running())
+	mem := runtime.MemStats{}
+	runtime.ReadMemStats(&mem)
+	curMem = mem.TotalAlloc/MiB - curMem
+	t.Logf("memory usage:%d MB", curMem)
+}
+
+// TestAntsPoolWithFuncWaitToGetWorker is used to test waiting to get worker.
+func TestAntsPoolWithFuncWaitToGetWorker(t *testing.T) {
 	var wg sync.WaitGroup
 	p, _ := ants.NewPoolWithFunc(AntsSize, func(i interface{}) {
 		demoPoolFunc(i)
@@ -62,7 +85,7 @@ func TestAntsPoolWithFunc(t *testing.T) {
 
 	for i := 0; i < n; i++ {
 		wg.Add(1)
-		p.Serve(Param)
+		p.Invoke(Param)
 	}
 	wg.Wait()
 	t.Logf("pool with func, running workers number:%d", p.Running())
@@ -72,6 +95,44 @@ func TestAntsPoolWithFunc(t *testing.T) {
 	t.Logf("memory usage:%d MB", curMem)
 }
 
+// TestAntsPoolGetWorkerFromCache is used to test getting worker from sync.Pool.
+func TestAntsPoolGetWorkerFromCache(t *testing.T) {
+	p, _ := ants.NewPool(TestSize)
+	defer p.Release()
+
+	for i := 0; i < AntsSize; i++ {
+		p.Submit(demoFunc)
+	}
+	time.Sleep(2 * ants.DefaultCleanIntervalTime * time.Second)
+	p.Submit(demoFunc)
+	t.Logf("pool, running workers number:%d", p.Running())
+	mem := runtime.MemStats{}
+	runtime.ReadMemStats(&mem)
+	curMem = mem.TotalAlloc/MiB - curMem
+	t.Logf("memory usage:%d MB", curMem)
+}
+
+// TestAntsPoolWithFuncGetWorkerFromCache is used to test getting worker from sync.Pool.
+func TestAntsPoolWithFuncGetWorkerFromCache(t *testing.T) {
+	dur := 10
+	p, _ := ants.NewPoolWithFunc(TestSize, demoPoolFunc)
+	defer p.Release()
+
+	for i := 0; i < AntsSize; i++ {
+		p.Invoke(dur)
+	}
+	time.Sleep(2 * ants.DefaultCleanIntervalTime * time.Second)
+	p.Invoke(dur)
+	t.Logf("pool with func, running workers number:%d", p.Running())
+	mem := runtime.MemStats{}
+	runtime.ReadMemStats(&mem)
+	curMem = mem.TotalAlloc/MiB - curMem
+	t.Logf("memory usage:%d MB", curMem)
+}
+
+//-------------------------------------------------------------------------------------------
+// Contrast between goroutines without a pool and goroutines with ants pool.
+//-------------------------------------------------------------------------------------------
 func TestNoPool(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
@@ -111,7 +172,102 @@ func TestAntsPool(t *testing.T) {
 	t.Logf("memory usage:%d MB", curMem)
 }
 
-func TestCodeCov(t *testing.T) {
+//-------------------------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------------
+
+func TestPanicHandler(t *testing.T) {
+	p0, err := ants.NewPool(10)
+	if err != nil {
+		t.Fatalf("create new pool failed: %s", err.Error())
+	}
+	defer p0.Release()
+	var panicCounter int64
+	var wg sync.WaitGroup
+	p0.PanicHandler = func(p interface{}) {
+		defer wg.Done()
+		atomic.AddInt64(&panicCounter, 1)
+		t.Logf("catch panic with PanicHandler: %v", p)
+	}
+	wg.Add(1)
+	p0.Submit(func() {
+		panic("Oops!")
+	})
+	wg.Wait()
+	c := atomic.LoadInt64(&panicCounter)
+	if c != 1 {
+		t.Errorf("panic handler didn't work, panicCounter: %d", c)
+	}
+	if p0.Running() != 0 {
+		t.Errorf("pool should be empty after panic")
+	}
+
+	p1, err := ants.NewPoolWithFunc(10, func(p interface{}) {
+		panic(p)
+	})
+	if err != nil {
+		t.Fatalf("create new pool with func failed: %s", err.Error())
+	}
+	defer p1.Release()
+	p1.PanicHandler = func(p interface{}) {
+		defer wg.Done()
+		atomic.AddInt64(&panicCounter, 1)
+	}
+	wg.Add(1)
+	p1.Invoke("Oops!")
+	wg.Wait()
+	c = atomic.LoadInt64(&panicCounter)
+	if c != 2 {
+		t.Errorf("panic handler didn't work, panicCounter: %d", c)
+	}
+	if p1.Running() != 0 {
+		t.Errorf("pool should be empty after panic")
+	}
+}
+
+func TestPoolPanicWithoutHandler(t *testing.T) {
+	p0, err := ants.NewPool(10)
+	if err != nil {
+		t.Fatalf("create new pool failed: %s", err.Error())
+	}
+	defer p0.Release()
+	p0.Submit(func() {
+		panic("Oops!")
+	})
+
+	p1, err := ants.NewPoolWithFunc(10, func(p interface{}) {
+		panic(p)
+	})
+	if err != nil {
+		t.Fatalf("create new pool with func failed: %s", err.Error())
+	}
+	defer p1.Release()
+	p1.Invoke("Oops!")
+}
+
+func TestPurge(t *testing.T) {
+	p, err := ants.NewPool(10)
+	defer p.Release()
+	if err != nil {
+		t.Fatalf("create TimingPool failed: %s", err.Error())
+	}
+	p.Submit(demoFunc)
+	time.Sleep(3 * ants.DefaultCleanIntervalTime * time.Second)
+	if p.Running() != 0 {
+		t.Error("all p should be purged")
+	}
+	p1, err := ants.NewPoolWithFunc(10, demoPoolFunc)
+	defer p1.Release()
+	if err != nil {
+		t.Fatalf("create TimingPoolWithFunc failed: %s", err.Error())
+	}
+	p1.Invoke(1)
+	time.Sleep(3 * ants.DefaultCleanIntervalTime * time.Second)
+	if p.Running() != 0 {
+		t.Error("all p should be purged")
+	}
+}
+
+func TestRestCodeCoverage(t *testing.T) {
 	_, err := ants.NewTimingPool(-1, -1)
 	t.Log(err)
 	_, err = ants.NewTimingPool(1, -1)
@@ -121,7 +277,7 @@ func TestCodeCov(t *testing.T) {
 	_, err = ants.NewTimingPoolWithFunc(1, -1, demoPoolFunc)
 	t.Log(err)
 
-	p0, _ := ants.NewPool(AntsSize)
+	p0, _ := ants.NewPool(TestSize)
 	defer p0.Submit(demoFunc)
 	defer p0.Release()
 	for i := 0; i < n; i++ {
@@ -130,21 +286,21 @@ func TestCodeCov(t *testing.T) {
 	t.Logf("pool, capacity:%d", p0.Cap())
 	t.Logf("pool, running workers number:%d", p0.Running())
 	t.Logf("pool, free workers number:%d", p0.Free())
-	p0.ReSize(AntsSize)
-	p0.ReSize(AntsSize / 2)
-	t.Logf("pool, after resize, capacity:%d, running:%d", p0.Cap(), p0.Running())
+	p0.Tune(TestSize)
+	p0.Tune(TestSize / 10)
+	t.Logf("pool, after tuning capacity, capacity:%d, running:%d", p0.Cap(), p0.Running())
 
 	p, _ := ants.NewPoolWithFunc(TestSize, demoPoolFunc)
-	defer p.Serve(Param)
+	defer p.Invoke(Param)
 	defer p.Release()
 	for i := 0; i < n; i++ {
-		p.Serve(Param)
+		p.Invoke(Param)
 	}
 	time.Sleep(ants.DefaultCleanIntervalTime * time.Second)
 	t.Logf("pool with func, capacity:%d", p.Cap())
 	t.Logf("pool with func, running workers number:%d", p.Running())
 	t.Logf("pool with func, free workers number:%d", p.Free())
-	p.ReSize(TestSize)
-	p.ReSize(AntsSize)
-	t.Logf("pool with func, after resize, capacity:%d, running:%d", p.Cap(), p.Running())
+	p.Tune(TestSize)
+	p.Tune(TestSize / 10)
+	t.Logf("pool with func, after tuning capacity, capacity:%d, running:%d", p.Cap(), p.Running())
 }

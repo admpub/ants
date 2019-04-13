@@ -28,10 +28,6 @@ import (
 	"time"
 )
 
-type sig struct{}
-
-type f func()
-
 // Pool accept the tasks from client,it limits the total
 // of goroutines to a given number by recycling goroutines.
 type Pool struct {
@@ -48,15 +44,23 @@ type Pool struct {
 	workers []*Worker
 
 	// release is used to notice the pool to closed itself.
-	release chan sig
+	release int32
 
 	// lock for synchronous operation.
 	lock sync.Mutex
 
-	// cond for waiting to get a idle worker
+	// cond for waiting to get a idle worker.
 	cond *sync.Cond
 
+	// once makes sure releasing this pool will just be done for one time.
 	once sync.Once
+
+	// workerCache speeds up the obtainment of the an usable worker in function:retrieveWorker.
+	workerCache sync.Pool
+
+	// PanicHandler is used to handle panics from each worker goroutine.
+	// if nil, panics will be thrown out again from worker goroutines.
+	PanicHandler func(interface{})
 }
 
 // clear expired workers periodically.
@@ -68,7 +72,7 @@ func (p *Pool) periodicallyPurge() {
 		currentTime := time.Now()
 		p.lock.Lock()
 		idleWorkers := p.workers
-		if len(idleWorkers) == 0 && p.Running() == 0 && len(p.release) > 0 {
+		if len(idleWorkers) == 0 && p.Running() == 0 && atomic.LoadInt32(&p.release) == 1 {
 			p.lock.Unlock()
 			return
 		}
@@ -107,7 +111,6 @@ func NewTimingPool(size, expiry int) (*Pool, error) {
 	}
 	p := &Pool{
 		capacity:       int32(size),
-		release:        make(chan sig, 1),
 		expiryDuration: time.Duration(expiry) * time.Second,
 	}
 	p.cond = sync.NewCond(&p.lock)
@@ -115,14 +118,14 @@ func NewTimingPool(size, expiry int) (*Pool, error) {
 	return p, nil
 }
 
-//-------------------------------------------------------------------------
+//---------------------------------------------------------------------------
 
 // Submit submits a task to this pool.
-func (p *Pool) Submit(task f) error {
-	if len(p.release) > 0 {
+func (p *Pool) Submit(task func()) error {
+	if 1 == atomic.LoadInt32(&p.release) {
 		return ErrPoolClosed
 	}
-	p.getWorker().task <- task
+	p.retrieveWorker().task <- task
 	return nil
 }
 
@@ -141,22 +144,22 @@ func (p *Pool) Cap() int {
 	return int(atomic.LoadInt32(&p.capacity))
 }
 
-// ReSize changes the capacity of this pool.
-func (p *Pool) ReSize(size int) {
+// Tune changes the capacity of this pool.
+func (p *Pool) Tune(size int) {
 	if size == p.Cap() {
 		return
 	}
 	atomic.StoreInt32(&p.capacity, int32(size))
 	diff := p.Running() - size
 	for i := 0; i < diff; i++ {
-		p.getWorker().task <- nil
+		p.retrieveWorker().task <- nil
 	}
 }
 
 // Release Closes this pool.
 func (p *Pool) Release() error {
 	p.once.Do(func() {
-		p.release <- sig{}
+		atomic.StoreInt32(&p.release, 1)
 		p.lock.Lock()
 		idleWorkers := p.workers
 		for i, w := range idleWorkers {
@@ -169,7 +172,7 @@ func (p *Pool) Release() error {
 	return nil
 }
 
-//-------------------------------------------------------------------------
+//---------------------------------------------------------------------------
 
 // incRunning increases the number of the currently running goroutines.
 func (p *Pool) incRunning() {
@@ -181,24 +184,30 @@ func (p *Pool) decRunning() {
 	atomic.AddInt32(&p.running, -1)
 }
 
-// getWorker returns a available worker to run the tasks.
-func (p *Pool) getWorker() *Worker {
+// retrieveWorker returns a available worker to run the tasks.
+func (p *Pool) retrieveWorker() *Worker {
 	var w *Worker
-	waiting := false
 
 	p.lock.Lock()
-	defer p.lock.Unlock()
 	idleWorkers := p.workers
 	n := len(idleWorkers) - 1
-	if n < 0 {
-		waiting = p.Running() >= p.Cap()
-	} else {
+	if n >= 0 {
 		w = idleWorkers[n]
 		idleWorkers[n] = nil
 		p.workers = idleWorkers[:n]
-	}
-
-	if waiting {
+		p.lock.Unlock()
+	} else if p.Running() < p.Cap() {
+		p.lock.Unlock()
+		if cacheWorker := p.workerCache.Get(); cacheWorker != nil {
+			w = cacheWorker.(*Worker)
+		} else {
+			w = &Worker{
+				pool: p,
+				task: make(chan func(), workerChanCap),
+			}
+		}
+		w.run()
+	} else {
 		for {
 			p.cond.Wait()
 			l := len(p.workers) - 1
@@ -210,23 +219,17 @@ func (p *Pool) getWorker() *Worker {
 			p.workers = p.workers[:l]
 			break
 		}
-	} else if w == nil {
-		w = &Worker{
-			pool: p,
-			task: make(chan f, 1),
-		}
-		w.run()
-		p.incRunning()
+		p.lock.Unlock()
 	}
 	return w
 }
 
-// putWorker puts a worker back into free pool, recycling the goroutines.
-func (p *Pool) putWorker(worker *Worker) {
+// revertWorker puts a worker back into free pool, recycling the goroutines.
+func (p *Pool) revertWorker(worker *Worker) {
 	worker.recycleTime = time.Now()
 	p.lock.Lock()
 	p.workers = append(p.workers, worker)
-	// Notify there is an available worker put back into queue.
+	// Notify the invoker stuck in 'retrieveWorker()' of there is an available worker in the worker queue.
 	p.cond.Signal()
 	p.lock.Unlock()
 }
