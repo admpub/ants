@@ -28,7 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/panjf2000/ants"
+	"github.com/panjf2000/ants/v2"
 )
 
 var sum int32
@@ -57,13 +57,13 @@ func main() {
 	}
 	for i := 0; i < runTimes; i++ {
 		wg.Add(1)
-		ants.Submit(syncCalculateSum)
+		_ = ants.Submit(syncCalculateSum)
 	}
 	wg.Wait()
 	fmt.Printf("running goroutines: %d\n", ants.Running())
 	fmt.Printf("finish all tasks.\n")
 
-	// Use the pool with a function,
+	// Use the pool with a method,
 	// set 10 to the capacity of goroutine pool and 1 second for expired duration.
 	p, _ := ants.NewPoolWithFunc(10, func(i interface{}) {
 		myFunc(i)
@@ -73,9 +73,12 @@ func main() {
 	// Submit tasks one by one.
 	for i := 0; i < runTimes; i++ {
 		wg.Add(1)
-		p.Invoke(int32(i))
+		_ = p.Invoke(int32(i))
 	}
 	wg.Wait()
 	fmt.Printf("running goroutines: %d\n", p.Running())
 	fmt.Printf("finish all tasks, result is %d\n", sum)
+	if sum != 499500 {
+		panic("the final result is wrong!!!")
+	}
 }

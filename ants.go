@@ -24,8 +24,11 @@ package ants
 
 import (
 	"errors"
+	"log"
 	"math"
+	"os"
 	"runtime"
+	"time"
 )
 
 const (
@@ -33,24 +36,45 @@ const (
 	DefaultAntsPoolSize = math.MaxInt32
 
 	// DefaultCleanIntervalTime is the interval time to clean up goroutines.
-	DefaultCleanIntervalTime = 1
+	DefaultCleanIntervalTime = time.Second
+)
+
+const (
+	// OPENED represents that the pool is opened.
+	OPENED = iota
+
+	// CLOSED represents that the pool is closed.
+	CLOSED
 )
 
 var (
 	// Error types for the Ants API.
 	//---------------------------------------------------------------------------
-	// ErrInvalidPoolSize will be returned when setting a negative number as pool capacity.
+
+	// ErrInvalidPoolSize will be returned when setting a negative number as pool capacity, this error will be only used
+	// by pool with func because pool without func can be infinite by setting up a negative capacity.
 	ErrInvalidPoolSize = errors.New("invalid size for pool")
+
+	// ErrLackPoolFunc will be returned when invokers don't provide function for pool.
+	ErrLackPoolFunc = errors.New("must provide function for pool")
 
 	// ErrInvalidPoolExpiry will be returned when setting a negative number as the periodic duration to purge goroutines.
 	ErrInvalidPoolExpiry = errors.New("invalid expiry for pool")
 
 	// ErrPoolClosed will be returned when submitting task to a closed pool.
 	ErrPoolClosed = errors.New("this pool has been closed")
+
+	// ErrPoolOverload will be returned when the pool is full and no workers available.
+	ErrPoolOverload = errors.New("too many goroutines blocked on submit or Nonblocking is set")
+
+	// ErrInvalidPreAllocSize will be returned when trying to set up a negative capacity under PreAlloc mode.
+	ErrInvalidPreAllocSize = errors.New("can not set up a negative capacity under PreAlloc mode")
+
 	//---------------------------------------------------------------------------
 
 	// workerChanCap determines whether the channel of a worker should be a buffered channel
-	// to get the best performance. Inspired by fasthttp at https://github.com/valyala/fasthttp/blob/master/workerpool.go#L139
+	// to get the best performance. Inspired by fasthttp at
+	// https://github.com/valyala/fasthttp/blob/master/workerpool.go#L139
 	workerChanCap = func() int {
 		// Use blocking workerChan if GOMAXPROCS=1.
 		// This immediately switches Serve to WorkerFunc, which results
@@ -65,10 +89,17 @@ var (
 		return 1
 	}()
 
-    defaultAntsPool, _ = NewPool(DefaultAntsPoolSize)
+	defaultLogger = Logger(log.New(os.Stderr, "", log.LstdFlags))
+
+	// Init a instance pool when importing ants.
+	defaultAntsPool, _ = NewPool(DefaultAntsPoolSize)
 )
 
-// Init a instance pool when importing ants.
+// Logger is used for logging formatted messages.
+type Logger interface {
+	// Printf must have the same semantics as log.Printf.
+	Printf(format string, args ...interface{})
+}
 
 // Submit submits a task to pool.
 func Submit(task func()) error {
@@ -92,5 +123,10 @@ func Free() int {
 
 // Release Closes the default pool.
 func Release() {
-	_ = defaultAntsPool.Release()
+	defaultAntsPool.Release()
+}
+
+// Reboot reboots the default pool.
+func Reboot() {
+	defaultAntsPool.Reboot()
 }
